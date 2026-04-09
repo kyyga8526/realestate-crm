@@ -2131,11 +2131,17 @@ function solveOptimalRoute(places) {
 }
 
 // ===== OSRM ROAD ROUTING =====
+function fetchWithTimeout(url, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 async function getOSRMRoute(coords) {
-  // coords: array of [lng, lat] pairs (OSRM uses lng,lat order)
+  // coords: array of [lat, lng] pairs → OSRM uses lng,lat order
   const coordStr = coords.map(c => `${c[1]},${c[0]}`).join(';');
   const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson&steps=true`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url, 10000);
   if (!res.ok) throw new Error('경로 조회 실패');
   const data = await res.json();
   if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) throw new Error('경로를 찾을 수 없습니다');
@@ -2143,14 +2149,13 @@ async function getOSRMRoute(coords) {
 }
 
 async function getOSRMDistanceMatrix(places) {
-  // Get driving distances between all places using OSRM table service
   const coordStr = places.map(p => `${p.lng},${p.lat}`).join(';');
   const url = `https://router.project-osrm.org/table/v1/driving/${coordStr}?annotations=distance,duration`;
   try {
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, 8000);
     const data = await res.json();
     if (data.code === 'Ok') return data;
-  } catch(e) {}
+  } catch(e) { console.warn('OSRM matrix 실패:', e.message); }
   return null;
 }
 
@@ -2190,22 +2195,23 @@ function calculateOptimalRoute() {
 
 async function calculateWithOSRM(places) {
   try {
-    // Get distance matrix from OSRM
-    const matrix = await getOSRMDistanceMatrix(places);
+    // Get distance matrix from OSRM (with fallback)
+    let matrix = null;
+    try {
+      matrix = await getOSRMDistanceMatrix(places);
+    } catch(e) { console.warn('OSRM matrix 건너뜀:', e.message); }
 
     let optimized;
     if (matrix && matrix.distances) {
-      // Use real driving distances for optimization
       optimized = solveOptimalRouteWithMatrix(places, matrix.distances, matrix.durations);
     } else {
-      // Fallback: use haversine
-      const startIdx = routeStartPoint ? 0 : -1;
+      // Fallback: use haversine distance
       const destinations = routeStartPoint ? places.slice(1) : places;
       const solved = solveOptimalRoute(destinations);
       optimized = routeStartPoint ? [places[0], ...solved] : solved;
     }
 
-    // Now get actual road route
+    // Get actual road route from OSRM
     const coords = optimized.map(p => [p.lat, p.lng]);
     let route = null;
     let totalDistance = 0;
@@ -2214,22 +2220,25 @@ async function calculateWithOSRM(places) {
     if (coords.length >= 2) {
       try {
         route = await getOSRMRoute(coords);
-        totalDistance = route.distance / 1000; // meters to km
-        totalDuration = route.duration / 60; // seconds to minutes
+        totalDistance = route.distance / 1000;
+        totalDuration = route.duration / 60;
       } catch(e) {
-        // Fallback to straight line distances
+        console.warn('OSRM route 실패, 직선 거리로 계산:', e.message);
+        // Fallback: straight line with Kakao polyline
         for (let i = 1; i < optimized.length; i++) {
           totalDistance += getDistance(optimized[i-1].lat, optimized[i-1].lng, optimized[i].lat, optimized[i].lng);
         }
-        totalDuration = totalDistance / 30 * 60;
+        // 직선 거리 × 1.3 = 실제 도로 거리 근사
+        totalDistance *= 1.3;
+        totalDuration = totalDistance / 30 * 60; // 평균 시속 30km 가정
       }
     }
 
     // Draw on map
     drawOptimizedRoute(optimized, route, totalDistance, totalDuration);
   } catch(err) {
-    console.error(err);
-    document.getElementById('route-summary').textContent = '경로 계산 실패. 다시 시도해주세요.';
+    console.error('경로 계산 전체 실패:', err);
+    document.getElementById('route-summary').innerHTML = '<span style="color:red">경로 계산 실패. 다시 시도해주세요.</span>';
   }
 }
 
@@ -2297,8 +2306,9 @@ async function drawOptimizedRoute(optimized, osrmRoute, totalDistance, totalDura
   routeLines = [];
   if (routeLine) { routeLine.setMap(null); routeLine = null; }
 
-  // Draw actual road route if available
+  // Draw route line on map
   if (osrmRoute && osrmRoute.geometry) {
+    // 실제 도로 경로
     const roadCoords = osrmRoute.geometry.coordinates.map(c => new kakao.maps.LatLng(c[1], c[0]));
     routeLine = new kakao.maps.Polyline({
       map: map,
@@ -2307,6 +2317,17 @@ async function drawOptimizedRoute(optimized, osrmRoute, totalDistance, totalDura
       strokeWeight: 5,
       strokeOpacity: 0.75,
       strokeStyle: 'solid'
+    });
+  } else if (optimized.length >= 2) {
+    // 폴백: 직선 경로
+    const straightCoords = optimized.map(p => new kakao.maps.LatLng(p.lat, p.lng));
+    routeLine = new kakao.maps.Polyline({
+      map: map,
+      path: straightCoords,
+      strokeColor: '#2563eb',
+      strokeWeight: 4,
+      strokeOpacity: 0.6,
+      strokeStyle: 'dashed'
     });
   }
 
@@ -2388,7 +2409,7 @@ async function drawOptimizedRoute(optimized, osrmRoute, totalDistance, totalDura
   const destCount = optimized.filter(p => !p.isStart).length;
 
   resultDiv.innerHTML = `
-    <div class="card-title">🧭 최적 동선 결과 ${osrmRoute ? '<span style="font-size:12px;color:var(--success);font-weight:400">(실제 도로 기준)</span>' : ''}</div>
+    <div class="card-title">🧭 최적 동선 결과 ${osrmRoute ? '<span style="font-size:12px;color:var(--success);font-weight:400">(실제 도로 기준)</span>' : '<span style="font-size:12px;color:var(--warning);font-weight:400">(예상 거리 기준)</span>'}</div>
     <div style="display:flex;gap:16px;margin-bottom:14px;flex-wrap:wrap">
       <div style="background:var(--primary-light);padding:10px 16px;border-radius:10px;flex:1;min-width:120px">
         <div style="font-size:12px;color:var(--gray-500)">방문지</div>
