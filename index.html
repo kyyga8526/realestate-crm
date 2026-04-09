@@ -680,25 +680,26 @@ tr:hover td { background: var(--gray-50); }
       <h2>⚙️ 설정</h2>
     </div>
     <div class="card">
-      <div class="card-title">🗺️ 주소 검색 안내</div>
+      <div class="card-title">🗺️ 카카오 지도 좌표 설정</div>
       <p style="font-size:14px;color:var(--gray-600);margin-bottom:16px">
-        주소 검색은 <strong>다음 우편번호 서비스</strong>를 사용합니다.<br>
-        API 키 없이 바로 사용 가능하며, 정확한 한국 주소를 검색할 수 있습니다.
+        주소 검색은 다음 우편번호 서비스로 바로 사용 가능합니다.<br>
+        <strong>정확한 지도 위치</strong>를 위해 카카오 JavaScript 키를 등록하세요.
       </p>
-      <div style="background:#d1fae5;padding:16px;border-radius:10px;margin-bottom:16px">
-        <strong style="color:#065f46">✅ 설정 완료 - 바로 사용 가능!</strong>
-        <p style="margin-top:8px;font-size:13px;color:#065f46">
-          별도 설정 없이 주소 검색 기능을 사용하실 수 있습니다.<br>
-          매물, 미팅, 동선, 지도 페이지에서 "검색" 버튼을 누르면 주소 검색 팝업이 열립니다.
-        </p>
+      <div class="form-group">
+        <label>카카오 JavaScript 키</label>
+        <div style="display:flex;gap:10px">
+          <input type="text" id="kakao-api-key-input" placeholder="JavaScript 키를 붙여넣으세요" style="flex:1;padding:10px 14px;border:1px solid var(--gray-200);border-radius:8px;font-size:14px;font-family:monospace">
+          <button class="btn btn-primary" onclick="testKakaoKey()">테스트 및 저장</button>
+        </div>
       </div>
-      <div style="background:var(--primary-light);padding:16px;border-radius:10px">
-        <strong style="color:var(--primary)">사용 방법</strong>
+      <div id="kakao-key-status" style="margin-top:10px;font-size:13px"></div>
+      <div style="background:var(--primary-light);padding:16px;border-radius:10px;margin-top:16px">
+        <strong style="color:var(--primary)">설정 방법</strong>
         <ol style="margin-top:8px;padding-left:20px;font-size:13px;color:var(--gray-700);line-height:2">
-          <li>매물/미팅/동선/지도에서 <strong>"검색"</strong> 버튼 클릭</li>
-          <li>팝업에서 주소 검색 (도로명, 지번, 건물명 모두 가능)</li>
-          <li>원하는 주소를 클릭하면 자동으로 입력됩니다</li>
-          <li>지도에서 핀 위치를 드래그하여 미세 조정 가능</li>
+          <li><a href="https://developers.kakao.com" target="_blank" style="color:var(--primary);font-weight:600">developers.kakao.com</a> → 부동산 CRM 앱 → 플랫폼 키</li>
+          <li><strong>JavaScript 키</strong>를 복사하여 위에 붙여넣기</li>
+          <li>JavaScript 키 수정 → SDK 도메인에 현재 사이트 주소 등록</li>
+          <li>"테스트 및 저장" 클릭하여 확인</li>
         </ol>
       </div>
     </div>
@@ -1026,25 +1027,88 @@ function loadData() {
   return { clients: [], contracts: [], properties: [], meetings: [], activities: [] };
 }
 
-// ===== ADDRESS GEOCODING (다음 우편번호 서비스 + Nominatim 좌표) =====
-// 다음 우편번호 서비스: API 키 불필요, 정확한 한국 주소 검색
+// ===== ADDRESS GEOCODING (다음 우편번호 + 카카오 좌표) =====
+let kakaoSDKLoaded = false;
+let kakaoSDKLoading = false;
 
-// Nominatim으로 좌표 얻기 (주소 → 위도/경도)
+function getKakaoApiKey() { return localStorage.getItem('kakao_js_api_key') || ''; }
+function saveKakaoApiKey(key) { localStorage.setItem('kakao_js_api_key', key.trim()); }
+
+function loadKakaoSDK(jsKey) {
+  return new Promise((resolve, reject) => {
+    if (kakaoSDKLoaded && window.kakao && kakao.maps && kakao.maps.services) { resolve(); return; }
+    if (kakaoSDKLoading) {
+      const wait = setInterval(() => { if (kakaoSDKLoaded) { clearInterval(wait); resolve(); } }, 200);
+      return;
+    }
+    kakaoSDKLoading = true;
+    const existing = document.getElementById('kakao-sdk-script');
+    if (existing) existing.remove();
+    const script = document.createElement('script');
+    script.id = 'kakao-sdk-script';
+    script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${jsKey}&libraries=services&autoload=false`;
+    script.onload = () => { kakao.maps.load(() => { kakaoSDKLoaded = true; kakaoSDKLoading = false; resolve(); }); };
+    script.onerror = () => { kakaoSDKLoading = false; reject(new Error('카카오 SDK 로드 실패')); };
+    document.head.appendChild(script);
+  });
+}
+
+// 카카오 SDK로 좌표 검색 (정확)
+async function geocodeWithKakao(query) {
+  const key = getKakaoApiKey();
+  if (!key) return null;
+  try {
+    await loadKakaoSDK(key);
+    return await new Promise(resolve => {
+      const geocoder = new kakao.maps.services.Geocoder();
+      geocoder.addressSearch(query, (data, status) => {
+        if (status === kakao.maps.services.Status.OK && data.length > 0) {
+          resolve({ lat: parseFloat(data[0].y), lng: parseFloat(data[0].x) });
+        } else { resolve(null); }
+      });
+    });
+  } catch(e) { console.warn('Kakao geocode error:', e); return null; }
+}
+
+// Nominatim 폴백 (근사치)
 async function geocodeWithNominatim(query) {
   try {
     const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=kr&limit=3&addressdetails=1&accept-language=ko`;
     const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (!res.ok) return null;
     const results = await res.json();
-    if (results.length > 0) {
-      return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
-    }
+    if (results.length > 0) return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
   } catch(e) { console.warn('Nominatim geocode error:', e); }
   return null;
 }
 
-// 역지오코딩 (좌표 → 주소)
+// 좌표 검색 (카카오 우선 → Nominatim 폴백)
+async function geocodeAddress(query) {
+  return (await geocodeWithKakao(query)) || (await geocodeWithNominatim(query));
+}
+
+// 역지오코딩 (좌표 → 주소, 카카오 우선)
 async function reverseGeocodeKorean(lat, lng) {
+  const key = getKakaoApiKey();
+  if (key) {
+    try {
+      await loadKakaoSDK(key);
+      const result = await new Promise(resolve => {
+        const geocoder = new kakao.maps.services.Geocoder();
+        geocoder.coord2Address(lng, lat, (data, status) => {
+          if (status === kakao.maps.services.Status.OK && data.length > 0) {
+            const doc = data[0];
+            if (doc.road_address) {
+              const bldg = doc.road_address.building_name ? ` (${doc.road_address.building_name})` : '';
+              resolve(doc.road_address.address_name + bldg);
+            } else if (doc.address) { resolve(doc.address.address_name); }
+            else { resolve(null); }
+          } else { resolve(null); }
+        });
+      });
+      if (result) return result;
+    } catch(e) { console.warn('Kakao reverse error:', e); }
+  }
   try {
     const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1&accept-language=ko`);
     const data = await res.json();
@@ -1052,19 +1116,38 @@ async function reverseGeocodeKorean(lat, lng) {
       const a = data.address;
       let parts = [];
       if (a.state) parts.push(a.state);
-      let city = a.city || a.county || '';
-      if (city && city !== a.state) parts.push(city);
-      let gu = a.city_district || a.borough || '';
-      if (gu && gu !== city) parts.push(gu);
-      let dong = a.quarter || a.suburb || a.neighbourhood || a.village || '';
-      if (dong) parts.push(dong);
+      let city = a.city || a.county || ''; if (city && city !== a.state) parts.push(city);
+      let gu = a.city_district || a.borough || ''; if (gu && gu !== city) parts.push(gu);
+      let dong = a.quarter || a.suburb || a.neighbourhood || a.village || ''; if (dong) parts.push(dong);
       if (a.road) { parts.push(a.road); if (a.house_number) parts.push(a.house_number); }
       let addr = parts.join(' ');
-      if (addr) return addr;
-      return data.display_name.replace(/, 대한민국$/, '');
+      return addr || data.display_name.replace(/, 대한민국$/, '');
     }
   } catch(e) {}
   return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+}
+
+// 카카오 키 테스트 및 저장
+async function testKakaoKey() {
+  const key = document.getElementById('kakao-api-key-input').value.trim();
+  const statusEl = document.getElementById('kakao-key-status');
+  if (!key) { statusEl.innerHTML = '<span style="color:red">키를 입력해주세요.</span>'; return; }
+  statusEl.innerHTML = '<span style="color:var(--gray-500)">테스트 중...</span>';
+  kakaoSDKLoaded = false; kakaoSDKLoading = false;
+  try {
+    await loadKakaoSDK(key);
+    const geocoder = new kakao.maps.services.Geocoder();
+    geocoder.addressSearch('대구 달서구 죽전동 256-5', (result, status) => {
+      if (status === kakao.maps.services.Status.OK && result.length > 0) {
+        saveKakaoApiKey(key);
+        statusEl.innerHTML = '<span style="color:green">✅ 연결 성공! 정확한 좌표 검색이 활성화되었습니다.</span>';
+      } else {
+        statusEl.innerHTML = '<span style="color:orange">⚠️ SDK 로드됨, 검색 결과 없음.</span>';
+      }
+    });
+  } catch(e) {
+    statusEl.innerHTML = '<span style="color:red">❌ 실패: ' + e.message + '</span>';
+  }
 }
 
 // 다음 우편번호 임베드 방식 열기
@@ -1121,10 +1204,10 @@ async function handleAddressSelected(context, displayAddr, roadAddr, jibunAddr, 
   const resultsDiv = document.getElementById(resultsId);
   if (resultsDiv) resultsDiv.classList.remove('show');
 
-  // 좌표 검색 (Nominatim에 정확한 주소로 시도)
+  // 좌표 검색 (카카오 우선 → Nominatim 폴백)
   let coords = null;
   for (const q of searchQueries) {
-    coords = await geocodeWithNominatim(q);
+    coords = await geocodeAddress(q);
     if (coords) break;
   }
 
@@ -2620,6 +2703,14 @@ document.addEventListener('DOMContentLoaded', function() {
   renderDashboard();
   initMap();
   setTimeout(initMeetingMap, 500);
+
+  // 저장된 카카오 키 로드
+  const savedKey = getKakaoApiKey();
+  if (savedKey) {
+    const keyInput = document.getElementById('kakao-api-key-input');
+    if (keyInput) keyInput.value = savedKey;
+    loadKakaoSDK(savedKey).catch(e => console.warn('Kakao preload:', e));
+  }
 
   // Auto-check expiry on load
   const expiring = getExpiringContracts();
