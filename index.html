@@ -253,7 +253,7 @@ tr:hover td { background: var(--gray-50); }
 
 /* ===== MAP ===== */
 #map-container { height: 500px; border-radius: var(--radius); overflow: hidden; position: relative; }
-#map { height: 100%; width: 100%; }
+#map { height: 100%; width: 100%; background: var(--gray-100); }
 .map-controls {
   display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
 }
@@ -1045,7 +1045,11 @@ function loadKakaoSDK(jsKey) {
     const script = document.createElement('script');
     script.id = 'kakao-sdk-script';
     script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${jsKey}&libraries=services&autoload=false`;
-    script.onload = () => { kakao.maps.load(() => { kakaoSDKLoaded = true; kakaoSDKLoading = false; resolve(); }); };
+    script.onload = () => {
+      try {
+        kakao.maps.load(() => { kakaoSDKLoaded = true; kakaoSDKLoading = false; resolve(); });
+      } catch(err) { kakaoSDKLoading = false; reject(err); }
+    };
     script.onerror = () => { kakaoSDKLoading = false; reject(new Error('카카오 SDK 로드 실패')); };
     document.head.appendChild(script);
   });
@@ -1135,10 +1139,14 @@ async function testKakaoKey() {
   try {
     await loadKakaoSDK(key);
     const geocoder = new kakao.maps.services.Geocoder();
-    geocoder.addressSearch('대구 달서구 죽전동 256-5', (result, status) => {
+    geocoder.addressSearch('대구 달서구 죽전동 256-5', async (result, status) => {
       if (status === kakao.maps.services.Status.OK && result.length > 0) {
         saveKakaoApiKey(key);
         statusEl.innerHTML = '<span style="color:green">✅ 연결 성공! 정확한 좌표 검색이 활성화되었습니다.</span>';
+        // 지도 다시 초기화
+        await initMap();
+        await initMeetingMap();
+        if (data.properties.length > 0) showAllProperties();
       } else {
         statusEl.innerHTML = '<span style="color:orange">⚠️ SDK 로드됨, 검색 결과 없음.</span>';
       }
@@ -1761,16 +1769,19 @@ function viewContractDetail(id) {
 // ===== PROPERTY & MAP =====
 async function initMap() {
   const key = getKakaoApiKey();
-  if (key) {
-    try {
-      await loadKakaoSDK(key);
-    } catch(e) {
-      console.warn('Map SDK load failed, will retry:', e);
-    }
+  if (!key) {
+    document.getElementById('map').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--gray-500);font-size:14px;text-align:center;padding:20px">지도를 사용하려면<br><a href="#" onclick="event.preventDefault();showPage(\'settings\')" style="color:var(--primary);font-weight:600">설정</a>에서 카카오 API 키를 등록하세요</div>';
+    return;
+  }
+  try {
+    await loadKakaoSDK(key);
+  } catch(e) {
+    document.getElementById('map').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:red;font-size:14px;text-align:center;padding:20px">카카오 지도 로드 실패<br>설정에서 API 키를 확인해주세요</div>';
+    return;
   }
 
   map = new kakao.maps.Map(document.getElementById('map'), {
-    center: new kakao.maps.LatLng(37.5665, 126.9780),
+    center: new kakao.maps.LatLng(35.8714, 128.6014),
     level: 8
   });
 
@@ -1785,16 +1796,13 @@ async function initMap() {
 
 async function initMeetingMap() {
   const key = getKakaoApiKey();
-  if (key) {
-    try {
-      await loadKakaoSDK(key);
-    } catch(e) {
-      console.warn('Meeting map SDK load failed, will retry:', e);
-    }
-  }
+  if (!key) return;
+  try {
+    await loadKakaoSDK(key);
+  } catch(e) { return; }
 
   meetingMap = new kakao.maps.Map(document.getElementById('meeting-map-container'), {
-    center: new kakao.maps.LatLng(37.5665, 126.9780),
+    center: new kakao.maps.LatLng(35.8714, 128.6014),
     level: 8
   });
 }
