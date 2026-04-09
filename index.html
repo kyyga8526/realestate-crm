@@ -10,8 +10,6 @@
 <meta name="theme-color" content="#2563eb">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
 <style>
 :root {
@@ -1227,18 +1225,35 @@ async function handleAddressSelected(context, displayAddr, roadAddr, jibunAddr, 
     setStartPoint(coords.lat, coords.lng, displayAddr);
     document.getElementById('manual-start-wrap').style.display = 'none';
   } else if (context === 'map') {
-    map.setView([coords.lat, coords.lng], 17);
-    propertyMarkers.forEach(m => map.removeLayer(m));
+    map.setCenter(new kakao.maps.LatLng(coords.lat, coords.lng));
+    map.setLevel(5);
+    propertyMarkers.forEach(m => m.setMap(null));
     propertyMarkers = [];
-    const marker = L.marker([coords.lat, coords.lng], { draggable: true }).addTo(map);
-    marker.bindPopup(`<strong>📍 ${displayAddr}</strong><br><span style="font-size:12px;color:#666">${roadAddr ? '도로명: ' + roadAddr + '<br>' : ''}${jibunAddr ? '지번: ' + jibunAddr + '<br>' : ''}${zonecode ? '우편번호: ' + zonecode : ''}</span><br><em style="font-size:11px;color:#999">핀을 드래그하여 정확한 위치로 이동 가능</em>`).openPopup();
-    propertyMarkers.push(marker);
 
-    // 마커 드래그로 위치 미세 조정 가능
-    marker.on('dragend', function(e) {
-      const pos = e.target.getLatLng();
-      marker.setPopupContent(`<strong>📍 ${displayAddr}</strong><br><span style="font-size:12px;color:#888">위치가 조정되었습니다</span>`);
+    const marker = new kakao.maps.Marker({
+      map: map,
+      position: new kakao.maps.LatLng(coords.lat, coords.lng),
+      draggable: true
     });
+
+    const popupHtml = `<strong>📍 ${displayAddr}</strong><br><span style="font-size:12px;color:#666">${roadAddr ? '도로명: ' + roadAddr + '<br>' : ''}${jibunAddr ? '지번: ' + jibunAddr + '<br>' : ''}${zonecode ? '우편번호: ' + zonecode : ''}</span><br><em style="font-size:11px;color:#999">핀을 드래그하여 정확한 위치로 이동 가능</em>`;
+
+    const infoWindow = new kakao.maps.InfoWindow({
+      content: `<div style="padding:8px 10px;font-size:12px;">${popupHtml}</div>`
+    });
+
+    infoWindow.open(map, marker);
+    kakao.maps.event.addListener(marker, 'click', function() {
+      infoWindow.open(map, marker);
+    });
+
+    kakao.maps.event.addListener(marker, 'dragend', function(e) {
+      const pos = e.target.getPosition();
+      infoWindow.setContent(`<div style="padding:8px 10px;font-size:12px;"><strong>📍 ${displayAddr}</strong><br><span style="font-size:12px;color:#888">위치가 조정되었습니다</span></div>`);
+      infoWindow.open(map, marker);
+    });
+
+    propertyMarkers.push(marker);
   }
 }
 
@@ -1299,8 +1314,8 @@ function showPage(page) {
   if (page === 'dashboard') renderDashboard();
   if (page === 'clients') renderClients();
   if (page === 'contracts') renderContracts();
-  if (page === 'map') { setTimeout(() => { if(map) map.invalidateSize(); showAllProperties(); }, 100); }
-  if (page === 'meetings') { renderMeetings(); setTimeout(() => { if(meetingMap) meetingMap.invalidateSize(); }, 100); }
+  if (page === 'map') { setTimeout(() => { if(map) map.relayout(); showAllProperties(); }, 100); }
+  if (page === 'meetings') { renderMeetings(); setTimeout(() => { if(meetingMap) meetingMap.relayout(); }, 100); }
 
   // Close sidebar on mobile
   document.getElementById('sidebar').classList.remove('open');
@@ -1744,33 +1759,50 @@ function viewContractDetail(id) {
 }
 
 // ===== PROPERTY & MAP =====
-function initMap() {
-  map = L.map('map').setView([37.5665, 126.9780], 12);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    attribution: '© <a href="https://carto.com/">CARTO</a> © <a href="https://www.openstreetmap.org/copyright">OSM</a>',
-    subdomains: 'abcd', maxZoom: 19
-  }).addTo(map);
+async function initMap() {
+  const key = getKakaoApiKey();
+  if (key) {
+    try {
+      await loadKakaoSDK(key);
+    } catch(e) {
+      console.warn('Map SDK load failed, will retry:', e);
+    }
+  }
 
-  map.on('click', function(e) {
+  map = new kakao.maps.Map(document.getElementById('map'), {
+    center: new kakao.maps.LatLng(37.5665, 126.9780),
+    level: 8
+  });
+
+  kakao.maps.event.addListener(map, 'click', function(mouseEvent) {
     if (document.getElementById('property-modal').classList.contains('show')) {
-      document.getElementById('property-lat').value = e.latlng.lat.toFixed(6);
-      document.getElementById('property-lng').value = e.latlng.lng.toFixed(6);
+      const latlng = mouseEvent.latLng;
+      document.getElementById('property-lat').value = latlng.getLat().toFixed(6);
+      document.getElementById('property-lng').value = latlng.getLng().toFixed(6);
     }
   });
 }
 
-function initMeetingMap() {
-  meetingMap = L.map('meeting-map-container').setView([37.5665, 126.9780], 12);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    attribution: '© <a href="https://carto.com/">CARTO</a> © <a href="https://www.openstreetmap.org/copyright">OSM</a>',
-    subdomains: 'abcd', maxZoom: 19
-  }).addTo(meetingMap);
+async function initMeetingMap() {
+  const key = getKakaoApiKey();
+  if (key) {
+    try {
+      await loadKakaoSDK(key);
+    } catch(e) {
+      console.warn('Meeting map SDK load failed, will retry:', e);
+    }
+  }
+
+  meetingMap = new kakao.maps.Map(document.getElementById('meeting-map-container'), {
+    center: new kakao.maps.LatLng(37.5665, 126.9780),
+    level: 8
+  });
 }
 
 function showAllProperties() {
-  propertyMarkers.forEach(m => map.removeLayer(m));
+  propertyMarkers.forEach(m => m.setMap(null));
   propertyMarkers = [];
-  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (routeLine) { routeLine.setMap(null); routeLine = null; }
 
   const statusColors = { available: '#10b981', reserved: '#f59e0b', contracted: '#6b7280' };
   const statusLabels = { available: '매물가능', reserved: '예약중', contracted: '계약완료' };
@@ -1778,28 +1810,36 @@ function showAllProperties() {
   data.properties.forEach(p => {
     if (!p.lat || !p.lng) return;
     const color = statusColors[p.status] || '#2563eb';
-    const icon = L.divIcon({
-      className: '',
-      html: `<div style="background:${color};color:white;padding:4px 8px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap;box-shadow:0 2px 4px rgba(0,0,0,0.3)">${p.name}</div>`,
-      iconAnchor: [40, 12]
+
+    const marker = new kakao.maps.Marker({
+      map: map,
+      position: new kakao.maps.LatLng(p.lat, p.lng)
     });
-    const marker = L.marker([p.lat, p.lng], { icon }).addTo(map);
-    marker.bindPopup(`
-      <div class="property-popup">
-        <h4>${p.name}</h4>
-        <p>📍 ${p.address}</p>
-        <p>🏠 ${p.type} · ${p.size ? p.size + '㎡' : ''}</p>
-        <p>💰 ${p.price || '-'}</p>
-        <p>상태: <strong>${statusLabels[p.status]}</strong></p>
-        ${p.memo ? `<p>📝 ${p.memo}</p>` : ''}
-      </div>
-    `);
+
+    const infoWindow = new kakao.maps.InfoWindow({
+      content: `
+        <div class="property-popup" style="padding:10px;font-size:12px;width:200px;">
+          <h4 style="margin:0 0 5px 0;font-size:14px;">${p.name}</h4>
+          <p style="margin:2px 0;">📍 ${p.address}</p>
+          <p style="margin:2px 0;">🏠 ${p.type} · ${p.size ? p.size + '㎡' : ''}</p>
+          <p style="margin:2px 0;">💰 ${p.price || '-'}</p>
+          <p style="margin:2px 0;">상태: <strong>${statusLabels[p.status]}</strong></p>
+          ${p.memo ? `<p style="margin:2px 0;">📝 ${p.memo}</p>` : ''}
+        </div>
+      `
+    });
+
+    kakao.maps.event.addListener(marker, 'click', function() {
+      infoWindow.open(map, marker);
+    });
+
     propertyMarkers.push(marker);
   });
 
   if (propertyMarkers.length > 0) {
-    const group = L.featureGroup(propertyMarkers);
-    map.fitBounds(group.getBounds().pad(0.1));
+    const bounds = new kakao.maps.LatLngBounds();
+    propertyMarkers.forEach(m => bounds.extend(m.getPosition()));
+    map.setBounds(bounds);
   }
 
   renderPropertiesTable();
@@ -1835,13 +1875,20 @@ function showNearbyInfo() {
     nearbyTypes.forEach(poi => {
       const lat = parseFloat(p.lat) + poi.offset[0] + (Math.random() - 0.5) * 0.002;
       const lng = parseFloat(p.lng) + poi.offset[1] + (Math.random() - 0.5) * 0.002;
-      const icon = L.divIcon({
-        className: '',
-        html: `<div style="font-size:20px;text-shadow:0 1px 2px rgba(0,0,0,0.3)">${poi.icon}</div>`,
-        iconAnchor: [12, 12]
+
+      const marker = new kakao.maps.Marker({
+        map: map,
+        position: new kakao.maps.LatLng(lat, lng)
       });
-      const marker = L.marker([lat, lng], { icon }).addTo(map);
-      marker.bindPopup(`<strong>${poi.icon} ${poi.name}</strong><br>주변 편의시설`);
+
+      const infoWindow = new kakao.maps.InfoWindow({
+        content: `<div style="padding:5px 10px;font-size:12px;"><strong>${poi.icon} ${poi.name}</strong><br>주변 편의시설</div>`
+      });
+
+      kakao.maps.event.addListener(marker, 'click', function() {
+        infoWindow.open(map, marker);
+      });
+
       propertyMarkers.push(marker);
     });
   });
@@ -1957,37 +2004,51 @@ function updateRouteCheckStyle(cb) {
 }
 
 function showAllOnRouteMap(items) {
-  propertyMarkers.forEach(m => map.removeLayer(m));
+  propertyMarkers.forEach(m => m.setMap(null));
   propertyMarkers = [];
-  routeLines.forEach(l => map.removeLayer(l));
+  routeLines.forEach(l => l.setMap(null));
   routeLines = [];
-  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (routeLine) { routeLine.setMap(null); routeLine = null; }
 
   // Show start point if set
   if (routeStartPoint) {
-    const startIcon = L.divIcon({
-      className: '',
-      html: `<div style="background:#10b981;color:white;padding:5px 10px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.3)">📍 출발</div>`,
-      iconAnchor: [30, 12]
+    const sm = new kakao.maps.Marker({
+      map: map,
+      position: new kakao.maps.LatLng(routeStartPoint.lat, routeStartPoint.lng)
     });
-    const sm = L.marker([routeStartPoint.lat, routeStartPoint.lng], { icon: startIcon }).addTo(map);
-    sm.bindPopup(`<strong>출발점</strong><br>${routeStartPoint.name}`);
+
+    const infoWindow = new kakao.maps.InfoWindow({
+      content: `<div style="padding:5px 10px;font-size:12px;"><strong>출발점</strong><br>${routeStartPoint.name}</div>`
+    });
+
+    kakao.maps.event.addListener(sm, 'click', function() {
+      infoWindow.open(map, sm);
+    });
+
     propertyMarkers.push(sm);
   }
 
   items.forEach(item => {
-    const icon = L.divIcon({
-      className: '',
-      html: `<div style="background:${item.tag === 'property' ? '#2563eb' : '#f59e0b'};color:white;padding:4px 8px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap;box-shadow:0 2px 4px rgba(0,0,0,0.3)">${item.name}</div>`,
-      iconAnchor: [40, 12]
+    const marker = new kakao.maps.Marker({
+      map: map,
+      position: new kakao.maps.LatLng(item.lat, item.lng)
     });
-    const marker = L.marker([item.lat, item.lng], { icon }).addTo(map);
-    marker.bindPopup(`<strong>${item.name}</strong><br>${item.address}`);
+
+    const infoWindow = new kakao.maps.InfoWindow({
+      content: `<div style="padding:5px 10px;font-size:12px;"><strong>${item.name}</strong><br>${item.address}</div>`
+    });
+
+    kakao.maps.event.addListener(marker, 'click', function() {
+      infoWindow.open(map, marker);
+    });
+
     propertyMarkers.push(marker);
   });
 
   if (propertyMarkers.length > 0) {
-    map.fitBounds(L.featureGroup(propertyMarkers).getBounds().pad(0.15));
+    const bounds = new kakao.maps.LatLngBounds();
+    propertyMarkers.forEach(m => bounds.extend(m.getPosition()));
+    map.setBounds(bounds);
   }
 }
 
@@ -2222,19 +2283,23 @@ function solveOptimalRouteWithMatrix(places, distances, durations) {
 
 async function drawOptimizedRoute(optimized, osrmRoute, totalDistance, totalDuration) {
   // Clear map
-  propertyMarkers.forEach(m => map.removeLayer(m));
+  propertyMarkers.forEach(m => m.setMap(null));
   propertyMarkers = [];
-  routeLines.forEach(l => map.removeLayer(l));
+  routeLines.forEach(l => l.setMap(null));
   routeLines = [];
-  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (routeLine) { routeLine.setMap(null); routeLine = null; }
 
   // Draw actual road route if available
   if (osrmRoute && osrmRoute.geometry) {
-    const roadCoords = osrmRoute.geometry.coordinates.map(c => [c[1], c[0]]);
-    routeLine = L.polyline(roadCoords, {
-      color: '#2563eb', weight: 5, opacity: 0.75,
-      lineJoin: 'round', lineCap: 'round'
-    }).addTo(map);
+    const roadCoords = osrmRoute.geometry.coordinates.map(c => new kakao.maps.LatLng(c[1], c[0]));
+    routeLine = new kakao.maps.Polyline({
+      map: map,
+      path: roadCoords,
+      strokeColor: '#2563eb',
+      strokeWeight: 5,
+      strokeOpacity: 0.75,
+      strokeStyle: 'solid'
+    });
   }
 
   // Segment distances from OSRM legs
@@ -2268,30 +2333,43 @@ async function drawOptimizedRoute(optimized, osrmRoute, totalDistance, totalDura
 
     const shortName = p.name.length > 20 ? p.name.substring(0, 20) + '...' : p.name;
 
-    const icon = L.divIcon({
-      className: '',
-      html: `<div style="display:flex;align-items:center;gap:6px;pointer-events:auto">
-        <div style="background:${bgColor};color:white;min-width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:${isStart ? '11' : '15'}px;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2px solid white;flex-shrink:0">${label}</div>
-        <div style="background:white;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,0.15);white-space:nowrap">${shortName}</div>
-      </div>`,
-      iconAnchor: [16, 16],
-      iconSize: [200, 36]
+    const customOverlayContent = document.createElement('div');
+    customOverlayContent.innerHTML = `<div style="display:flex;align-items:center;gap:6px;pointer-events:auto">
+      <div style="background:${bgColor};color:white;min-width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:${isStart ? '11' : '15'}px;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2px solid white;flex-shrink:0">${label}</div>
+      <div style="background:white;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,0.15);white-space:nowrap">${shortName}</div>
+    </div>`;
+
+    const overlay = new kakao.maps.CustomOverlay({
+      map: map,
+      position: new kakao.maps.LatLng(p.lat + offsetLat, p.lng + offsetLng),
+      content: customOverlayContent,
+      zIndex: (i + 1) * 100
     });
-    const marker = L.marker([p.lat + offsetLat, p.lng + offsetLng], { icon, zIndexOffset: (i + 1) * 100 }).addTo(map);
 
     let popupText = `<strong>${isStart ? '📍 출발점' : destNum + '번. ' + p.name}</strong><br>${p.address}`;
     if (i > 0 && legDistances[i-1] !== undefined) {
       popupText += `<br><span style="color:#2563eb;font-weight:600">🚗 ${legDistances[i-1].toFixed(1)}km · 약 ${Math.ceil(legDurations[i-1])}분</span>`;
     }
-    marker.bindPopup(popupText);
-    propertyMarkers.push(marker);
+
+    const infoWindow = new kakao.maps.InfoWindow({
+      content: `<div style="padding:8px 10px;font-size:12px;">${popupText}</div>`
+    });
+
+    kakao.maps.event.addListener(customOverlayContent, 'click', function() {
+      const pos = new kakao.maps.LatLng(p.lat + offsetLat, p.lng + offsetLng);
+      infoWindow.open(map, pos);
+    });
+
+    propertyMarkers.push(overlay);
   });
 
   // Fit bounds
   if (propertyMarkers.length > 0) {
-    const allItems = [...propertyMarkers];
-    if (routeLine) allItems.push(routeLine);
-    map.fitBounds(L.featureGroup(allItems).getBounds().pad(0.1));
+    const bounds = new kakao.maps.LatLngBounds();
+    optimized.forEach(p => {
+      bounds.extend(new kakao.maps.LatLng(p.lat, p.lng));
+    });
+    map.setBounds(bounds);
   }
 
   // Show route result panel
@@ -2347,11 +2425,11 @@ async function drawOptimizedRoute(optimized, osrmRoute, totalDistance, totalDura
 }
 
 function clearRoute() {
-  propertyMarkers.forEach(m => map.removeLayer(m));
+  propertyMarkers.forEach(m => m.setMap(null));
   propertyMarkers = [];
-  routeLines.forEach(l => map.removeLayer(l));
+  routeLines.forEach(l => l.setMap(null));
   routeLines = [];
-  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (routeLine) { routeLine.setMap(null); routeLine = null; }
   routeStartPoint = null;
   document.querySelectorAll('#route-checklist input').forEach(cb => { cb.checked = false; cb.closest('.route-check-item').classList.remove('checked'); });
   document.getElementById('route-summary').textContent = '';
@@ -2372,16 +2450,30 @@ function searchOnMap() {
   );
 
   if (found.length > 0) {
-    propertyMarkers.forEach(m => map.removeLayer(m));
+    propertyMarkers.forEach(m => m.setMap(null));
     propertyMarkers = [];
     found.forEach(p => {
       if (!p.lat || !p.lng) return;
-      const marker = L.marker([p.lat, p.lng]).addTo(map);
-      marker.bindPopup(`<strong>${p.name}</strong><br>${p.address}`).openPopup();
+      const marker = new kakao.maps.Marker({
+        map: map,
+        position: new kakao.maps.LatLng(p.lat, p.lng)
+      });
+
+      const infoWindow = new kakao.maps.InfoWindow({
+        content: `<div style="padding:5px 10px;font-size:12px;"><strong>${p.name}</strong><br>${p.address}</div>`
+      });
+
+      infoWindow.open(map, marker);
+      kakao.maps.event.addListener(marker, 'click', function() {
+        infoWindow.open(map, marker);
+      });
+
       propertyMarkers.push(marker);
     });
     if (propertyMarkers.length > 0) {
-      map.fitBounds(L.featureGroup(propertyMarkers).getBounds().pad(0.2));
+      const bounds = new kakao.maps.LatLngBounds();
+      propertyMarkers.forEach(m => bounds.extend(m.getPosition()));
+      map.setBounds(bounds);
     }
     return;
   }
@@ -2481,10 +2573,13 @@ function renderPropertiesTable() {
 function focusProperty(id) {
   const p = data.properties.find(pr => pr.id === id);
   if (p && p.lat && p.lng) {
-    map.setView([p.lat, p.lng], 16);
+    map.setCenter(new kakao.maps.LatLng(p.lat, p.lng));
+    map.setLevel(5);
     propertyMarkers.forEach(m => {
-      if (Math.abs(m.getLatLng().lat - p.lat) < 0.0001 && Math.abs(m.getLatLng().lng - p.lng) < 0.0001) {
-        m.openPopup();
+      const pos = m.getPosition();
+      if (Math.abs(pos.getLat() - p.lat) < 0.0001 && Math.abs(pos.getLng() - p.lng) < 0.0001) {
+        // Trigger click to open info window
+        kakao.maps.event.trigger(m, 'click');
       }
     });
   } else {
@@ -2655,7 +2750,7 @@ function renderMeetingCalendar() {
 
 function renderMeetingMapMarkers() {
   if (!meetingMap) return;
-  meetingMarkers.forEach(m => meetingMap.removeLayer(m));
+  meetingMarkers.forEach(m => m.setMap(null));
   meetingMarkers = [];
 
   const todayStr = new Date().toISOString().split('T')[0];
@@ -2668,28 +2763,47 @@ function renderMeetingMapMarkers() {
   const points = [];
   todayMeetings.forEach((m, i) => {
     const client = data.clients.find(c => c.id === m.clientId);
-    const icon = L.divIcon({
-      className: '',
-      html: `<div style="background:#2563eb;color:white;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;box-shadow:0 2px 4px rgba(0,0,0,0.3)">${i+1}</div>`,
-      iconAnchor: [13, 13]
+
+    const marker = new kakao.maps.Marker({
+      map: meetingMap,
+      position: new kakao.maps.LatLng(m.lat, m.lng)
     });
-    const marker = L.marker([m.lat, m.lng], { icon }).addTo(meetingMap);
-    marker.bindPopup(`<strong>${m.time}</strong> · ${client ? client.name : ''}<br>${m.location}`);
+
+    const infoWindow = new kakao.maps.InfoWindow({
+      content: `<div style="padding:5px 10px;font-size:12px;"><strong>${m.time}</strong> · ${client ? client.name : ''}<br>${m.location}</div>`
+    });
+
+    kakao.maps.event.addListener(marker, 'click', function() {
+      infoWindow.open(meetingMap, marker);
+    });
+
     meetingMarkers.push(marker);
-    points.push([parseFloat(m.lat), parseFloat(m.lng)]);
+    points.push(new kakao.maps.LatLng(parseFloat(m.lat), parseFloat(m.lng)));
   });
 
   if (points.length > 1) {
-    L.polyline(points, { color: '#2563eb', weight: 2, dashArray: '8, 8' }).addTo(meetingMap);
+    new kakao.maps.Polyline({
+      map: meetingMap,
+      path: points,
+      strokeColor: '#2563eb',
+      strokeWeight: 2,
+      strokeStyle: 'dashed'
+    });
   }
-  meetingMap.fitBounds(L.featureGroup(meetingMarkers).getBounds().pad(0.2));
+
+  const bounds = new kakao.maps.LatLngBounds();
+  meetingMarkers.forEach(m => bounds.extend(m.getPosition()));
+  meetingMap.setBounds(bounds);
 }
 
 function viewMeetingOnMap(id) {
   showPage('map');
   const m = data.meetings.find(mt => mt.id === id);
   if (m && m.lat && m.lng) {
-    setTimeout(() => { map.setView([m.lat, m.lng], 16); }, 200);
+    setTimeout(() => {
+      map.setCenter(new kakao.maps.LatLng(m.lat, m.lng));
+      map.setLevel(5);
+    }, 200);
   }
 }
 
