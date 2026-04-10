@@ -1166,7 +1166,7 @@ async function testKakaoKey() {
 // 주소 검색 (카카오 지오코더 직접 검색 → 다음 우편번호 폴백)
 let _addrSearchContext = null;
 
-async function searchAddress(context) {
+function searchAddress(context) {
   _addrSearchContext = context;
 
   // 입력값 가져오기
@@ -1179,137 +1179,11 @@ async function searchAddress(context) {
 
   const query = document.getElementById(inputId).value.trim();
 
-  // 입력값이 없으면 다음 우편번호 팝업 열기
-  if (!query) {
-    openDaumPostcode(context, '');
-    return;
-  }
-
-  // 카카오 SDK로 직접 검색
-  const key = getKakaoApiKey();
-  if (!key) {
-    openDaumPostcode(context, query);
-    return;
-  }
-
-  try {
-    await loadKakaoSDK(key);
-    const geocoder = new kakao.maps.services.Geocoder();
-
-    // 주소 검색 + 키워드 검색 동시 실행
-    const [addrResults, keywordResults] = await Promise.all([
-      new Promise(resolve => {
-        try {
-          geocoder.addressSearch(query, (data, status) => {
-            resolve(status === kakao.maps.services.Status.OK ? data : []);
-          });
-        } catch(e) { resolve([]); }
-      }),
-      new Promise(resolve => {
-        try {
-          const ps = new kakao.maps.services.Places();
-          ps.keywordSearch(query, (data, status) => {
-            resolve(status === kakao.maps.services.Status.OK ? data.slice(0, 5) : []);
-          });
-        } catch(e) { resolve([]); }
-      })
-    ]);
-
-    // 결과 합치기 (주소 검색 우선)
-    const results = [];
-    addrResults.forEach(r => {
-      results.push({
-        name: r.address_name,
-        road: r.road_address ? r.road_address.address_name : '',
-        jibun: r.address ? r.address.address_name : r.address_name,
-        lat: parseFloat(r.y),
-        lng: parseFloat(r.x),
-        type: 'address'
-      });
-    });
-    keywordResults.forEach(r => {
-      // 중복 제거
-      if (results.some(ex => Math.abs(ex.lat - parseFloat(r.y)) < 0.0001 && Math.abs(ex.lng - parseFloat(r.x)) < 0.0001)) return;
-      results.push({
-        name: r.place_name,
-        road: r.road_address_name || '',
-        jibun: r.address_name || '',
-        lat: parseFloat(r.y),
-        lng: parseFloat(r.x),
-        type: 'place'
-      });
-    });
-
-    if (results.length === 0) {
-      // 결과 없으면 다음 우편번호로 폴백 (입력값 자동 전달)
-      openDaumPostcode(context, query);
-      return;
-    }
-
-    // 결과가 1개면 바로 선택
-    if (results.length === 1) {
-      const r = results[0];
-      const displayAddr = r.road || r.jibun || r.name;
-      applyAddressResult(context, displayAddr, r.road, r.jibun, r.lat, r.lng);
-      return;
-    }
-
-    // 여러 결과 → 드롭다운 표시
-    showAddressDropdown(context, inputId, results);
-
-  } catch(e) {
-    console.warn('카카오 검색 실패, 다음 우편번호로 전환:', e);
-    openDaumPostcode(context, query);
-  }
+  // 바로 다음 우편번호 팝업 열기 (입력값 자동 전달)
+  // ※ 동기 호출 필수 - async하면 브라우저가 팝업 차단함
+  openDaumPostcode(context, query);
 }
 
-function showAddressDropdown(context, inputId, results) {
-  // 기존 드롭다운 제거
-  const existing = document.getElementById('kakao-addr-dropdown');
-  if (existing) existing.remove();
-
-  const input = document.getElementById(inputId);
-  const rect = input.getBoundingClientRect();
-
-  const dropdown = document.createElement('div');
-  dropdown.id = 'kakao-addr-dropdown';
-  dropdown.style.cssText = `position:fixed;top:${rect.bottom + 2}px;left:${rect.left}px;width:${rect.width}px;max-height:300px;overflow-y:auto;background:white;border:1px solid var(--gray-200);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.15);z-index:10002;`;
-
-  results.forEach((r, i) => {
-    const displayAddr = r.road || r.jibun || r.name;
-    const subText = r.type === 'place' ? r.name : (r.road && r.jibun && r.road !== r.jibun ? r.jibun : '');
-    const item = document.createElement('div');
-    item.style.cssText = `padding:12px 16px;cursor:pointer;border-bottom:1px solid var(--gray-100);font-size:14px;transition:background 0.15s;`;
-    item.innerHTML = `<div style="font-weight:600;color:var(--gray-800)">${r.type === 'place' ? '📍 ' : ''}${displayAddr}</div>${subText ? `<div style="font-size:12px;color:var(--gray-400);margin-top:2px">${subText}</div>` : ''}`;
-    item.onmouseenter = () => item.style.background = 'var(--primary-light)';
-    item.onmouseleave = () => item.style.background = 'white';
-    item.onclick = () => {
-      dropdown.remove();
-      applyAddressResult(context, displayAddr, r.road, r.jibun, r.lat, r.lng);
-    };
-    dropdown.appendChild(item);
-  });
-
-  // 하단에 "다음 우편번호로 상세 검색" 옵션
-  const daumOption = document.createElement('div');
-  daumOption.style.cssText = 'padding:10px 16px;cursor:pointer;font-size:13px;color:var(--primary);font-weight:600;text-align:center;background:var(--gray-50);border-radius:0 0 10px 10px;';
-  daumOption.textContent = '🔍 다음 우편번호로 상세 검색';
-  daumOption.onclick = () => { dropdown.remove(); openDaumPostcode(context, document.getElementById(inputId).value.trim()); };
-  dropdown.appendChild(daumOption);
-
-  document.body.appendChild(dropdown);
-
-  // 바깥 클릭 시 닫기
-  setTimeout(() => {
-    const closeHandler = (e) => {
-      if (!dropdown.contains(e.target) && e.target !== input) {
-        dropdown.remove();
-        document.removeEventListener('click', closeHandler);
-      }
-    };
-    document.addEventListener('click', closeHandler);
-  }, 100);
-}
 
 function applyAddressResult(context, displayAddr, roadAddr, jibunAddr, lat, lng) {
   try {
