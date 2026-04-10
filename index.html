@@ -1055,38 +1055,44 @@ function loadKakaoSDK(jsKey) {
   });
 }
 
-// 카카오 SDK로 좌표 검색 (정확)
+// 카카오 SDK로 좌표 검색 - 주소검색 + 키워드검색 폴백
 async function geocodeWithKakao(query) {
   const key = getKakaoApiKey();
   if (!key) return null;
   try {
     await loadKakaoSDK(key);
+    // 1차: 주소 검색
+    const addrResult = await new Promise(resolve => {
+      try {
+        const geocoder = new kakao.maps.services.Geocoder();
+        geocoder.addressSearch(query, (data, status) => {
+          if (status === kakao.maps.services.Status.OK && data.length > 0) {
+            resolve({ lat: parseFloat(data[0].y), lng: parseFloat(data[0].x) });
+          } else { resolve(null); }
+        });
+      } catch(e) { resolve(null); }
+    });
+    if (addrResult) return addrResult;
+
+    // 2차: 키워드(장소) 검색 폴백
     return await new Promise(resolve => {
-      const geocoder = new kakao.maps.services.Geocoder();
-      geocoder.addressSearch(query, (data, status) => {
-        if (status === kakao.maps.services.Status.OK && data.length > 0) {
-          resolve({ lat: parseFloat(data[0].y), lng: parseFloat(data[0].x) });
-        } else { resolve(null); }
-      });
+      try {
+        const ps = new kakao.maps.services.Places();
+        ps.keywordSearch(query, (data, status) => {
+          if (status === kakao.maps.services.Status.OK && data.length > 0) {
+            resolve({ lat: parseFloat(data[0].y), lng: parseFloat(data[0].x) });
+          } else { resolve(null); }
+        });
+      } catch(e) { resolve(null); }
     });
   } catch(e) { console.warn('Kakao geocode error:', e); return null; }
 }
 
-// Nominatim 폴백 (근사치)
-async function geocodeWithNominatim(query) {
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=kr&limit=3&addressdetails=1&accept-language=ko`;
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    if (!res.ok) return null;
-    const results = await res.json();
-    if (results.length > 0) return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
-  } catch(e) { console.warn('Nominatim geocode error:', e); }
-  return null;
-}
-
-// 좌표 검색 (카카오 우선 → Nominatim 폴백)
+// 좌표 검색 (카카오만 사용 - 키워드검색 폴백 포함)
 async function geocodeAddress(query) {
-  return (await geocodeWithKakao(query)) || (await geocodeWithNominatim(query));
+  try {
+    return await geocodeWithKakao(query);
+  } catch(e) { return null; }
 }
 
 // 역지오코딩 (좌표 → 주소, 카카오 우선)
@@ -1187,15 +1193,19 @@ async function searchAddress(context) {
     // 주소 검색 + 키워드 검색 동시 실행
     const [addrResults, keywordResults] = await Promise.all([
       new Promise(resolve => {
-        geocoder.addressSearch(query, (data, status) => {
-          resolve(status === kakao.maps.services.Status.OK ? data : []);
-        });
+        try {
+          geocoder.addressSearch(query, (data, status) => {
+            resolve(status === kakao.maps.services.Status.OK ? data : []);
+          });
+        } catch(e) { resolve([]); }
       }),
       new Promise(resolve => {
-        const ps = new kakao.maps.services.Places();
-        ps.keywordSearch(query, (data, status) => {
-          resolve(status === kakao.maps.services.Status.OK ? data.slice(0, 5) : []);
-        });
+        try {
+          const ps = new kakao.maps.services.Places();
+          ps.keywordSearch(query, (data, status) => {
+            resolve(status === kakao.maps.services.Status.OK ? data.slice(0, 5) : []);
+          });
+        } catch(e) { resolve([]); }
       })
     ]);
 
@@ -1346,14 +1356,26 @@ function openDaumPostcode(context) {
 
   new daum.Postcode({
     oncomplete: function(data) {
-      overlay.style.display = 'none';
-      const roadAddr = data.roadAddress || '';
-      const jibunAddr = data.jibunAddress || data.autoJibunAddress || '';
-      const buildingName = data.buildingName || '';
-      let displayAddr = roadAddr || jibunAddr;
-      if (buildingName) displayAddr += ` (${buildingName})`;
-      const searchQueries = [roadAddr, jibunAddr].filter(Boolean);
-      handleAddressSelected(_addrSearchContext, displayAddr, roadAddr, jibunAddr, data.zonecode || '', buildingName, searchQueries);
+      try {
+        overlay.style.display = 'none';
+        const roadAddr = data.roadAddress || '';
+        const jibunAddr = data.jibunAddress || data.autoJibunAddress || '';
+        const buildingName = data.buildingName || '';
+        let displayAddr = roadAddr || jibunAddr;
+        if (buildingName) displayAddr += ` (${buildingName})`;
+
+        // 비동기 좌표 검색 후 적용
+        const searchQuery = roadAddr || jibunAddr;
+        geocodeAddress(searchQuery).then(coords => {
+          if (!coords) coords = { lat: 35.8714, lng: 128.6014 };
+          applyAddressResult(_addrSearchContext, displayAddr, roadAddr, jibunAddr, coords.lat, coords.lng);
+        }).catch(() => {
+          applyAddressResult(_addrSearchContext, displayAddr, roadAddr, jibunAddr, 35.8714, 128.6014);
+        });
+      } catch(e) {
+        console.error('주소 처리 오류:', e);
+        overlay.style.display = 'none';
+      }
     },
     width: '100%',
     height: '100%'
@@ -1364,19 +1386,7 @@ function closeAddressSearch() {
   document.getElementById('address-search-overlay').style.display = 'none';
 }
 
-async function handleAddressSelected(context, displayAddr, roadAddr, jibunAddr, zonecode, buildingName, searchQueries) {
-  // 다음 우편번호에서 선택된 경우 → 좌표 검색 후 적용
-  let coords = null;
-  for (const q of searchQueries) {
-    coords = await geocodeAddress(q);
-    if (coords) break;
-  }
-  if (!coords) {
-    coords = { lat: 35.8714, lng: 128.6014 };
-    alert('주소는 정확하지만 지도 좌표를 찾지 못했습니다.\n지도에서 직접 위치를 클릭하여 핀을 설정해주세요.');
-  }
-  applyAddressResult(context, displayAddr, roadAddr, jibunAddr, coords.lat, coords.lng);
-}
+// handleAddressSelected는 openDaumPostcode에서 직접 처리
 
 function addCustomRouteDestination(name, lat, lng) {
   const checklist = document.getElementById('route-checklist');
